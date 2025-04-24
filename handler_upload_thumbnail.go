@@ -1,12 +1,16 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
-	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -29,13 +33,35 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	media_type := header.Header.Get("Content-Type")
+	defer file.Close()
 
-	image_data, err := io.ReadAll(file)
+	mediaType, _, err := mime.ParseMediaType(header.Header.Get("Content-Type"))
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't read thumbnail data", err)
+		respondWithError(w, http.StatusBadRequest, "Invalid content type", err)
 		return
 	}
+
+	if mediaType != "image/png" && mediaType != "image/jpeg" {
+		respondWithError(w, http.StatusBadRequest, "Unsupported thumbnail type: "+mediaType, nil)
+		return
+	}
+
+	var ext string
+	switch mediaType {
+	case "image/png":
+		ext = ".png"
+	case "image/jpeg":
+		ext = ".jpg"
+	default:
+		respondWithError(w, http.StatusBadRequest, "Unsupported thumbnail type: "+mediaType, nil)
+		return
+	}
+
+	// image_data, err := io.ReadAll(file)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusBadRequest, "Couldn't read thumbnail data", err)
+	// 	return
+	// }
 
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
@@ -60,24 +86,54 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	videoThumbnails[videoID] = thumbnail{
-		data:      image_data,
-		mediaType: media_type,
+	// Fill a 32-byte slice with random bytes
+	randBytes := make([]byte, 32)
+	_, err = rand.Read(randBytes)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't read random bytes", err)
+		return
 	}
 
-	video.ThumbnailURL = ptr("http://localhost:8091/api/thumbnails/" + video.ID.String())
+	// Convert the randBytes into random base64 string
+	thumbnailName := base64.RawURLEncoding.EncodeToString(randBytes)
 
-	cfg.db.UpdateVideo(video)
+	// Construct the file path
+	fileName := thumbnailName + ext
+	filePath := filepath.Join(cfg.assetsRoot, fileName)
 
-	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
+	// Save the uploaded image to disk
+	outFile, err := os.Create(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create file", err)
+		return
+	}
+	defer outFile.Close()
 
-	// TODO: implement the upload here
+	_, err = io.Copy(outFile, file)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't write file to disk", err)
+		return
+	}
 
-	respondWithJSON(w, http.StatusOK, database.Video{
-		ID:           video.ID,
-		CreatedAt:    video.CreatedAt,
-		UpdatedAt:    video.UpdatedAt,
-		ThumbnailURL: video.ThumbnailURL,
-		VideoURL:     video.VideoURL,
-	})
+	// Construct the public URL for the saved file
+	thumbnailURL := "http://localhost:" + cfg.port + "/assets/" + fileName
+	video.ThumbnailURL = &thumbnailURL
+
+	err = cfg.db.UpdateVideo(video)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
+		return
+	}
+
+	updatedVideo, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, "Couldn't get video", err)
+		return
+	}
+
+	fmt.Printf("✅ After update: %#v\n", updatedVideo.ThumbnailURL)
+	fmt.Println("uploading thumbnail for video", updatedVideo.ID, "by user", updatedVideo.UserID)
+
+	respondWithJSON(w, http.StatusOK, updatedVideo)
 }

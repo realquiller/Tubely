@@ -138,8 +138,8 @@ func (c Client) UpdateVideo(video Video) error {
 		video.Title,
 		video.Description,
 		video.ThumbnailURL,
-		video.VideoURL,
-		video.UserID,
+		&video.VideoURL,
+		&video.UserID,
 		video.ID,
 	)
 	return err
@@ -153,3 +153,4 @@ func (c Client) DeleteVideo(id uuid.UUID) error {
 	_, err := c.db.Exec(query, id)
 	return err
 }
+
